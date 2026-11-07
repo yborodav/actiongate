@@ -1,0 +1,8 @@
+data/
+actiongate.yaml
+*.pem
+vault.bin
+__pycache__/
+.pytest_cache/
+*.egg-info/
+.venv/

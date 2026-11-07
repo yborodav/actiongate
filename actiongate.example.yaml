@@ -1,0 +1,80 @@
+# ActionGate example config. Copy to actiongate.yaml and edit.
+# Secrets never go in this file: credentials live in the encrypted vault
+# (python -m actiongate put-secret <name>) and keys are stored as SHA-256 hashes
+# (python -m actiongate new-key).
+
+public_url: http://localhost:8080
+data_dir: data
+grant_ttl_seconds: 300
+
+agents:
+  - id: support-bot
+    key_sha256: "<sha256 of the agent key>"
+
+approvers:
+  - id: alice
+    token_sha256: "<sha256 of alice's approver token>"
+    slack_user: U0123ALICE
+  - id: finance-lead
+    token_sha256: "<sha256 of the finance lead's token>"
+    slack_user: U0456FIN
+
+admins:
+  - id: ops
+    token_sha256: "<sha256 of the admin token>"
+
+# Optional: approvals in Slack. Without this block, approvals print to the console.
+# slack:
+#   channel: "#agent-approvals"
+#   bot_token_secret: slack_bot_token        # vault entry
+#   signing_secret_name: slack_signing_secret # vault entry
+
+connectors:
+  - type: stripe
+    name: stripe
+    secret: stripe_restricted_key   # vault entry; use a Stripe restricted key
+
+  - type: http
+    name: billing
+    base_url: https://billing.internal.example.com
+    auth: {type: bearer, secret: billing_api_token}
+    operations:
+      get_account:
+        method: GET
+        path: /accounts/{account_id}
+        read_only: true
+        description: Look up a customer account.
+        params:
+          account_id: {type: string, in: path, required: true}
+      issue_credit:
+        method: POST
+        path: /accounts/{account_id}/credits
+        description: Issue an account credit in cents.
+        params:
+          account_id: {type: string, in: path, required: true}
+          amount: {type: integer, in: body, required: true}
+          memo: {type: string, in: body}
+
+# First matching rule wins. No match: reads are allowed, writes are denied.
+rules:
+  - name: small-refunds-auto
+    tool: stripe.create_refund
+    when: {amount: {lte: 5000}}          # up to $50.00
+    decision: allow
+
+  - name: large-refunds-need-approval
+    tool: stripe.create_refund
+    when: {amount: {lte: 100000}}        # up to $1,000.00
+    decision: require_approval
+    approvers: [alice, finance-lead]
+    timeout_seconds: 900
+
+  - name: huge-refunds-blocked
+    tool: stripe.create_refund
+    decision: deny
+
+  - name: credits-need-approval
+    tool: billing.issue_credit
+    decision: require_approval
+    approvers: [finance-lead]
+    timeout_seconds: 1800
