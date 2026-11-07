@@ -88,3 +88,4 @@ python -m pytest -q    # 31 tests: policy, grants, audit tampering, gateway flow
 - **SQLite means a single process.** Move to Postgres, with `SELECT … FOR UPDATE` replacing the in-process lock.
 - **No web dashboard yet.** Rules are edited in YAML.
 - **Accept external approvals** (Auth0 CIBA, OpenAI Agents SDK interruptions) as grant sources.
+# actiongate
