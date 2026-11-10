@@ -1,91 +1,175 @@
-# ActionGate (working name)
+# ActionGate
 
-An approval-enforcing execution proxy for AI agents. Agents call tools over MCP or REST.
-ActionGate holds the real credentials, checks each call against policy, and sends risky
-calls to a named human. It then executes only with a single-use grant bound to that exact action.
+**Let AI agents act on real systems without handing them the keys.**
+
+ActionGate sits between your agents and the APIs they call (Stripe, your own admin APIs). It holds the credentials itself, so the agent never sees them. It checks every call against your rules and sends risky ones to a named person in Slack. It then runs **exactly** the action that person approved, once. Every step goes into a signed, tamper-evident audit log.
 
 ```
-agent ──MCP/REST──> ActionGate ──(credential from vault)──> Stripe / internal API
-                      │  policy: allow · require_approval · deny (default deny)
-                      │  approver: Slack button or REST decision
-                      │  grant: Ed25519 JWT bound to the action hash, single use, 5 min
-                      └─ audit: hash-chained, signed, verifiable
+agent ──MCP / REST──▶ ActionGate ──credential from vault──▶ Stripe · internal APIs
+                        │ rules:     allow · require approval · deny (default: deny writes)
+                        │ pre-check: rejects actions that can't succeed, before anyone is asked
+                        │ approval:  Slack button or API, by approvers named on the rule
+                        │ grant:     signed, single-use, bound to the exact action, 5-minute life
+                        └ audit:     hash-chained and signed; `verify-audit` proves nothing was changed
 ```
 
-## Security invariants
+**Example:** a support agent asks to refund $200. Your rule says refunds over $50 need finance's sign-off. ActionGate:
+1. Checks the charge.
+2. Posts *"Refund $200.00 USD of a $300.00 USD charge"* to `#agent-approvals`.
+3. Waits.
+4. Refunds exactly $200 on exactly that charge when someone clicks Approve.
 
-1. **Fail closed.** An unknown tool, unknown parameter or wrong type is rejected. No matching rule means deny, except that read-only operations are allowed by default. An approval timeout means deny.
-2. **The stored action is what executes.** The approver approves the parameters stored at submit time, and the agent can't change them afterwards.
-3. **Only approvers named on the matching rule can decide.** An agent can never be an approver; config loading rejects it.
-4. **Every execution needs a grant.** It is signed with EdDSA (the algorithm is pinned), bound to the request ID and the action hash, short-lived, and single-use. It is verified right before the connector call.
-5. **The request ID is the idempotency key.** A retry or a double click cannot execute twice, and status changes are compare-and-set.
-6. **Agents never see credentials.** Credentials are encrypted at rest (Fernet), and agent keys and approver tokens are stored only as SHA-256 hashes.
+If nobody answers in 15 minutes, nothing happens.
 
-## Layout
+## Why not just give the agent an API key?
 
-| Path | What |
-| --- | --- |
-| `actiongate/gateway.py` | Core flow: submit, decide, execute, expire |
-| `actiongate/policy.py` | YAML rules, first match wins |
-| `actiongate/grants.py` | Single-use, action-bound grants |
-| `actiongate/audit.py` | Hash-chained, signed audit log |
-| `actiongate/connectors/` | `stripe.py` (demo), `http.py` (internal APIs from YAML) |
-| `actiongate/mcp_server.py` | One MCP tool per connector operation, plus `check_request` |
-| `actiongate/server.py` | REST API, Slack callback, `/mcp` mount |
-| `actiongate/vault.py` | Encrypted credential store |
+| | Agent holds the key | ActionGate |
+| --- | --- | --- |
+| Agent can read the credential | Yes | No: it stays in an encrypted vault |
+| A prompt injection can trigger a $10,000 refund | Yes | Only within your rules; large ones need a person |
+| Approver sees exactly what will run | Depends on your code | Yes: the parameters are frozen and hashed |
+| Approved once, executed twice | Possible | No: single-use grant plus idempotency key |
+| Proof of who approved what | Your logs, if any | Signed, hash-chained audit log |
+| Something breaks | Whatever your code does | Fail closed: nothing runs |
 
-## Run locally
+## Quickstart (about 5 minutes)
 
-Requirements: Python 3.11+, `starlette`, `uvicorn`, `mcp>=2`, `pyjwt`, `cryptography`, `requests`, `pyyaml`, plus `pytest` for the tests.
+### 1. Run it
 
+**With Docker:**
 ```bash
-export ACTIONGATE_VAULT_KEY=$(python -m actiongate vault-key)   # keep this safe
-python -m actiongate put-secret stripe_restricted_key            # prompts; use a Stripe *restricted* test key
-python -m actiongate new-key                                     # agent key + hash for config
-cp actiongate.example.yaml actiongate.yaml                       # paste hashes, edit rules
+git clone https://github.com/<you>/actiongate && cd actiongate
+docker build -t actiongate .
+```
+
+**Without Docker** (Python 3.11 or newer):
+```bash
+git clone https://github.com/<you>/actiongate && cd actiongate
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]" && python -m pytest -q
+```
+
+### 2. Create keys and store credentials
+```bash
+export ACTIONGATE_VAULT_KEY=$(python -m actiongate vault-key)  # keep it safe; it decrypts your vault
+python -m actiongate put-secret stripe_restricted_key           # paste at the prompt; never in a file
+python -m actiongate new-key                                    # agent key (give to the agent) + its hash
+```
+
+Use a Stripe **restricted key** with Charges: Read, Customers: Read and Refunds: Write, nothing more.
+
+### 3. Configure
+```bash
+cp actiongate.example.yaml actiongate.yaml   # paste the key hash, set approvers and rules
+```
+
+```yaml
+rules:                                   # first match wins
+  - name: small-refunds-auto
+    tool: stripe.create_refund
+    when: {amount: {lte: 5000}}          # up to $50.00 (amounts are in cents)
+    decision: allow
+  - name: large-refunds-need-approval
+    tool: stripe.create_refund
+    when: {amount: {lte: 100000}}        # up to $1,000.00
+    decision: require_approval
+    approvers: [finance-lead]
+    timeout_seconds: 900                 # no answer = deny
+  - name: everything-else-blocked
+    tool: stripe.create_refund
+    decision: deny
+```
+
+### 4. Start it
+```bash
 python -m actiongate serve --config actiongate.yaml
+# or with Docker:
+docker run -p 8080:8080 -e ACTIONGATE_VAULT_KEY \
+  -v "$PWD/actiongate.yaml:/app/actiongate.yaml:ro" -v "$PWD/data:/app/data" actiongate
 ```
 
-Run `put-secret` from the same directory as the config file, or pass `--vault <data_dir>/vault.bin`.
+### 5. Connect your agent over MCP
 
-### REST
+The endpoint is `http://localhost:8080/mcp/`, with the header `Authorization: Bearer <agent key>`.
+
+**Claude Code:**
+```bash
+claude mcp add --transport http actiongate http://localhost:8080/mcp/ --header "Authorization: Bearer $AGENT_KEY"
+```
+
+**Cursor** (`~/.cursor/mcp.json`):
+```json
+{ "mcpServers": { "actiongate": { "url": "http://localhost:8080/mcp/",
+  "headers": { "Authorization": "Bearer <agent key>" } } } }
+```
+
+**OpenAI Agents SDK:**
+```python
+from agents.mcp import MCPServerStreamableHttp
+gate = MCPServerStreamableHttp(params={"url": "http://localhost:8080/mcp/",
+                                       "headers": {"Authorization": f"Bearer {AGENT_KEY}"}})
+```
+
+- Tools are named `<connector>_<operation>`, for example `stripe_create_refund`.
+- A gated call returns `status: "pending"` with a `request_id`. Your agent should tell the user it's waiting for approval and call `check_request` later. It should not retry.
+
+### 6. Approve in Slack (optional)
+
+Without Slack, approval requests print to the server console, and approvers decide over the REST API. To use Slack:
+1. Create a Slack app with the `chat:write` bot scope.
+2. Point its Interactivity Request URL at `https://<your host>/slack/interactions`. Socket Mode must be off.
+3. Store the bot token and signing secret with `put-secret`.
+4. Add the `slack:` block to your config, as in the example file.
+
+## REST API
+
+| Method and path | Who | What |
+| --- | --- | --- |
+| `POST /v1/actions` | Agent | Submit `{"tool": "stripe.create_refund", "params": {...}}`. Returns `executed`, `denied` or `pending` (202) |
+| `GET /v1/requests/{id}` | Agent or approver | Status and result |
+| `POST /v1/requests/{id}/decision` | Approver | `{"decision": "approve" \| "deny"}` |
+| `GET /v1/audit/verify` | Admin | Verify the audit chain |
+| `GET /v1/public-key` | Anyone | Verify grants and audit signatures yourself |
+| `POST /slack/interactions` | Slack | Button clicks, signature-checked |
+
+## Your own APIs
+
+The `http` connector turns any internal endpoint into a gated tool, configured in YAML only. See `actiongate.example.yaml` for a `billing.issue_credit` example. Writes are never treated as read-only, even if marked so.
+
+## Security model
+
+The full list is in [SECURITY.md](SECURITY.md). In short:
+- **Fail closed:** unknown tool, no matching rule, failed pre-check or timeout means nothing runs.
+- **The approver approves the stored, hashed parameters,** and only approvers named on the rule can decide.
+- **Every execution needs a single-use grant:** Ed25519 with the algorithm pinned, bound to the request and action hash.
+- **The request ID doubles as the idempotency key,** and state changes are compare-and-set, so nothing runs twice.
+- **Credentials are encrypted at rest.** Agent keys and approver tokens are stored only as hashes.
+- **Agent-supplied values are escaped** before they're shown to approvers.
+
+**Trust boundary:** anyone holding the vault key or signing key can act as ActionGate. Protect them like production database credentials.
+
+## Testing
 
 ```bash
-# Agent submits (agent identity comes from the key, never the body)
-curl -X POST localhost:8080/v1/actions -H "Authorization: Bearer $AGENT_KEY" \
-  -d '{"tool":"stripe.create_refund","params":{"charge":"ch_123","amount":20000}}'
-# → 202 {"status":"pending","request_id":"req_..."}
-
-# Approver decides
-curl -X POST localhost:8080/v1/requests/req_.../decision -H "Authorization: Bearer $APPROVER_TOKEN" \
-  -d '{"decision":"approve"}'
-# → {"status":"executed", ...}
+python -m pytest -q             # unit and end-to-end tests (Stripe and Slack faked)
+python scripts/live_smoke.py    # real Stripe TEST mode: every policy path, refunds and audit
 ```
 
-Other endpoints:
-- `GET /v1/requests/{id}`: request status (agent or approver).
-- `GET /v1/audit/verify`: check the audit chain (admin).
-- `GET /v1/public-key`: verify grants and audit signatures yourself.
-- `POST /slack/interactions`: Slack button callback, signature-checked with a 5-minute replay window.
+`live_smoke.py` needs a separate test key in the vault called `stripe_smoke_key`, with PaymentIntents: Write and Charges: Read. It refuses to run against live keys.
 
-### MCP
+## Status and roadmap
 
-Point an MCP client at `http://localhost:8080/mcp/` with header `Authorization: Bearer <agent key>`.
-Tools are named `<connector>_<operation>` (for example `stripe_create_refund`). A gated call returns
-`status: pending` with a `request_id`, and the agent polls `check_request`.
+**Early, pre-1.0.** It works end to end against Stripe test mode. Use it in production only after your own review.
 
-## Tests
+Planned:
+- OAuth for MCP clients, replacing static agent keys.
+- Postgres and multiple instances.
+- Recovery for executions interrupted by a crash.
+- Background expiry that updates Slack.
+- Quorum approvals (2 of N).
+- A web dashboard.
+- More connectors.
 
-```bash
-python -m pytest -q    # 31 tests: policy, grants, audit tampering, gateway flows, connectors, REST, Slack, MCP
-```
+## License
 
-## Known gaps (next steps)
-
-- **Agent auth is a static bearer key.** Next is OAuth for MCP clients (client credentials, then token exchange with `act` claims for on-behalf-of).
-- **Approvers use static REST tokens or Slack identity.** Add SSO for the dashboard and quorum (2-of-N) rules.
-- **Expiry is lazy.** Pending requests expire when next touched, and execution is always blocked after the timeout. A background sweep is still needed so Slack shows "expired" promptly.
-- **SQLite means a single process.** Move to Postgres, with `SELECT … FOR UPDATE` replacing the in-process lock.
-- **No web dashboard yet.** Rules are edited in YAML.
-- **Accept external approvals** (Auth0 CIBA, OpenAI Agents SDK interruptions) as grant sources.
-# actiongate
+[Apache-2.0](LICENSE)

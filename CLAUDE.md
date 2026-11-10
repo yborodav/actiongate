@@ -18,6 +18,7 @@ Positioning, from market research done before this code:
 
 1. **Fail closed.**
    - Unknown tools, unknown parameters and wrong types are rejected.
+   - A write whose connector pre-check (`Connector.inspect`) fails or errors is rejected before any approver is asked.
    - No matching rule means deny. Only read-only operations default to allow.
    - An approval timeout means deny.
 2. **The stored action is what executes.** The approver approves stored parameters; the agent cannot change them after submitting.
@@ -44,7 +45,9 @@ Any change touching `gateway.py`, `grants.py`, `audit.py`, `policy.py` or auth i
 | `actiongate/mcp_server.py` | MCP server (mcp>=2 `MCPServer`): one tool per connector op + `check_request`; agent-key token verifier |
 | `actiongate/server.py` | Starlette app: REST, Slack callback, `/mcp` mount |
 | `actiongate/config.py` | YAML loading and wiring (`build()` is what tests use) |
-| `tests/` | 31 tests: core, gateway flows, connectors, REST/Slack/MCP end to end |
+| `tests/` | 39 tests: core, gateway flows, connectors, REST/Slack/MCP end to end |
+| `scripts/live_smoke.py` | Live check against Stripe TEST mode |
+| `docs/index.html` | Landing page (GitHub Pages, served from `/docs`) |
 
 ## Commands
 

@@ -152,7 +152,7 @@ def test_mcp_tools_and_gated_call(server):
     assert set(schema["required"]) == {"charge", "amount"}
 
     before = len(pay.calls)
-    _, data = _mcp(base, "tools/call", {"name": "pay_refund", "arguments": {"charge": "ch_m", "amount": 50000}},
+    _, data = _mcp(base, "tools/call", {"name": "pay_refund", "arguments": {"charge": "ch_m", "amount": 25000}},
                    session=session, rid=3)
     out = json.loads(data["result"]["content"][0]["text"])
     assert out["status"] == "pending" and out["agent_id"] == "support-bot"

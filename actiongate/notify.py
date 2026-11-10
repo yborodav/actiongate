@@ -26,10 +26,12 @@ class ConsoleNotifier:
         self.out = out
 
     def request_approval(self, request: Request) -> None:
+        summary = (request.context or {}).get("summary")
         self.out(
             f"[approval needed] {request.id} {request.action.tool_name} "
-            f"params={json.dumps(request.action.params)} agent={request.action.agent_id} "
-            f"approvers={request.approvers}"
+            + (f"\"{summary}\" " if summary else "")
+            + f"params={json.dumps(request.action.params)} agent={request.action.agent_id} "
+            + f"approvers={request.approvers}"
         )
 
     def decision_made(self, request: Request) -> None:
@@ -50,11 +52,20 @@ class SlackNotifier:
         mentions = " ".join(
             f"<@{self.approver_slack_ids[a]}>" for a in request.approvers if a in self.approver_slack_ids
         )
-        params = "\n".join(f"• `{k}`: `{v}`" for k, v in sorted(request.action.params.items()))
+        # Parameters come from the agent: escape them so a crafted value can't
+        # inject Slack mentions, links or formatting into the approval card.
+        params = "\n".join(f"• `{_escape(k)}`: `{_escape(str(v)).replace('`', 'ˋ')}`"
+                           for k, v in sorted(request.action.params.items()))
+        ctx = request.context or {}
+        headline = f"*{_escape(ctx['summary'])}*\n" if ctx.get("summary") else ""
+        extra = "".join(f"{label}: `{_escape(str(ctx[key]))}`\n"
+                        for key, label in (("customer_email", "Customer"), ("customer", "Customer ID"))
+                        if ctx.get(key))
         blocks: list[dict[str, Any]] = [
             {"type": "section", "text": {"type": "mrkdwn", "text":
-                f"*Approval needed:* `{request.action.tool_name}`\n"
-                f"Agent: `{request.action.agent_id}`  Rule: `{request.rule_name}`\n{params}\n{mentions}"}},
+                f"*Approval needed:* `{request.action.tool_name}`\n{headline}"
+                f"Agent: `{request.action.agent_id}`  Rule: `{request.rule_name}`\n{extra}"
+                f"Exact parameters that will run:\n{params}\n{mentions}"}},
             {"type": "context", "elements": [{"type": "mrkdwn", "text":
                 f"Request `{request.id}` · action hash `{request.action_hash[:16]}…` · "
                 f"expires <!date^{int(request.expires_at or 0)}^{{time}}|soon>; no answer means deny"}]},
@@ -86,6 +97,11 @@ class SlackNotifier:
             # A failed notification must not approve anything; the request
             # simply times out and is denied.
             log.error("slack post failed: %s", e.__class__.__name__)
+
+
+def _escape(text: str) -> str:
+    """Escape Slack mrkdwn control characters in values that came from upstream data."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def verify_slack_signature(signing_secret: str, timestamp: str, body: bytes, signature: str,

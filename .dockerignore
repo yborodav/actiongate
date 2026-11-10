@@ -1,0 +1,13 @@
+.git
+.venv
+data
+actiongate.yaml
+*.pem
+vault.bin
+cloudflared
+__pycache__
+.pytest_cache
+*.egg-info
+tests
+scripts
+docs

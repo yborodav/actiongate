@@ -35,6 +35,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from actiongate.config import load  # noqa: E402
+from actiongate.gateway import GatewayError  # noqa: E402
 from actiongate.models import Action, Decision, Status  # noqa: E402
 from actiongate.notify import ConsoleNotifier  # noqa: E402
 
@@ -107,6 +108,10 @@ def main() -> int:
         if decision == Decision.REQUIRE_APPROVAL:
             if not check(out.status == Status.PENDING, f"{label}: held for approval", out.status.value):
                 return out
+            summary = (out.request.context or {}).get("summary")
+            check(bool(summary), f"{label}: approver sees amount and currency", "no context")
+            if summary:
+                print(f"        approver sees: {summary}")
             approver = out.request.approvers[0]
             out = gw.decide(out.request.id, approver, approve=bool(approve), note="live smoke test")
         check(out.status == expect, f"{label}: {expect.value}",
@@ -141,8 +146,13 @@ def main() -> int:
         run(large, False, Status.DENIED, "$200 refund, approver denies")
         if run(large, True, Status.EXECUTED, "$200 refund, approver approves").status == Status.EXECUTED:
             expected_refunded += large
-        # $300 charge - $210 refunded = $90 left, so another $200 must fail at Stripe.
-        run(large, True, Status.FAILED, "$200 over-refund: Stripe rejects, no retry")
+        # $300 charge - $210 refunded = $90 left: another $200 must be rejected
+        # at submit time, before any approver is asked.
+        try:
+            gw.submit(refund(large))
+            check(False, "$200 over-refund: rejected before approval", "it was accepted")
+        except GatewayError as e:
+            check(e.code == "precheck_failed", "$200 over-refund: rejected before approval", f"{e.code}: {e}")
     if decision_for(huge) == Decision.DENY:
         run(huge, None, Status.DENIED, "$50,000 refund: blocked by policy")
 

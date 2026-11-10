@@ -81,6 +81,20 @@ class Gateway:
             # Reads pass through unless a rule says otherwise.
             result.decision, result.reason = Decision.ALLOW, "read-only operation (default allow)"
 
+        # Pre-check writes that would run or reach a human: reject what can't
+        # succeed (e.g. refunding more than is left) before anyone is asked,
+        # and collect human-readable context for the approver. Fails closed:
+        # if the pre-check itself errors, the action is rejected.
+        context = None
+        if not op.read_only and result.decision != Decision.DENY:
+            try:
+                context = connector.inspect(action.operation, action.params)
+            except ConnectorError as e:
+                self.audit.append("action.rejected", {
+                    "tool": action.tool_name, "agent_id": action.agent_id, "params": action.params,
+                    "action_hash": ahash, "error": str(e)})
+                raise GatewayError(str(e), "precheck_failed") from e
+
         now = self.clock()
         req = Request(
             id="req_" + uuid.uuid4().hex,
@@ -92,6 +106,7 @@ class Gateway:
             reason=result.reason,
             created_at=now,
             expires_at=now + result.timeout_seconds if result.decision == Decision.REQUIRE_APPROVAL else None,
+            context=context,
         )
 
         if result.decision == Decision.DENY:

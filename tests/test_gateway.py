@@ -95,6 +95,37 @@ def test_agents_only_see_their_own_requests(env):
         gw.get(out.request.id, agent_id="another-agent")
 
 
+def test_over_refund_rejected_before_anyone_is_asked(env):
+    gw = env["gw"]
+    with pytest.raises(GatewayError) as e:
+        gw.submit(refund(30001))
+    assert e.value.code == "precheck_failed"
+    assert env["notifier"].requested == [] and env["pay"].calls == []
+    assert [r["event"] for r in gw.store.iter_audit()] == ["action.rejected"]
+
+
+def test_precheck_failure_fails_closed(env):
+    env["pay"].inspect_error = "stripe request failed: ConnectionError"
+    with pytest.raises(GatewayError):
+        env["gw"].submit(refund(20000))
+    assert env["pay"].calls == [] and env["notifier"].requested == []
+
+
+def test_policy_deny_skips_precheck(env):
+    env["pay"].inspect_error = "should not be called"
+    assert env["gw"].submit(refund(500000)).status == Status.DENIED
+
+
+def test_context_shown_to_approver_but_not_hashed(env):
+    gw = env["gw"]
+    out = gw.submit(refund(20000))
+    assert out.request.context == {"summary": "Refund 20000 of 30000"}
+    assert env["notifier"].requested[0].context["summary"] == "Refund 20000 of 30000"
+    assert gw.get(out.request.id).context == out.request.context  # survives the database
+    env["pay"].charge_total = 999_99  # context changes; the hash of the same action does not
+    assert gw.submit(refund(20000)).request.action_hash == out.request.action_hash
+
+
 def test_every_step_is_audited_and_chain_verifies(env):
     gw = env["gw"]
     gw.submit(refund(1000))

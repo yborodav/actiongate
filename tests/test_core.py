@@ -108,6 +108,21 @@ def test_grant_forged_with_other_key_or_alg_none(issuer):
         g.verify_and_consume(unsigned, request_id="r1", action_hash="h1")
 
 
+def test_store_migrates_databases_from_v01(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(db)
+    conn.executescript("""CREATE TABLE requests (id TEXT PRIMARY KEY, action_json TEXT NOT NULL,
+        action_hash TEXT NOT NULL, status TEXT NOT NULL, rule_name TEXT, approvers_json TEXT NOT NULL,
+        reason TEXT, created_at REAL NOT NULL, expires_at REAL, decided_by TEXT, decided_at REAL,
+        result_json TEXT, error TEXT);""")
+    conn.close()
+    store = Store(db)
+    cols = {r["name"] for r in store.raw().execute("PRAGMA table_info(requests)")}
+    assert "context_json" in cols
+
+
 # ---------------------------------------------------------------- audit
 
 def test_audit_chain_detects_tampering():

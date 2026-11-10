@@ -86,6 +86,9 @@ class Request:
     decided_at: float | None = None
     result: Any = None
     error: str | None = None
+    # Human-readable details for approvers (e.g. "$200.00 USD of $300.00 charge").
+    # Display only: never part of the action hash, never used to execute.
+    context: dict[str, Any] | None = None
 
     def public_view(self) -> dict[str, Any]:
         """What an agent or approver may see. Never includes credentials."""
@@ -94,6 +97,7 @@ class Request:
             "status": self.status.value,
             "tool": self.action.tool_name,
             "params": self.action.params,
+            "context": self.context,
             "agent_id": self.action.agent_id,
             "action_hash": self.action_hash,
             "rule": self.rule_name,

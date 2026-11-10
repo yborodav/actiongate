@@ -46,6 +46,20 @@ class FakePayments(Connector):
     def __init__(self, fail: bool = False):
         self.calls: list[tuple[str, dict, str]] = []
         self.fail = fail
+        self.charge_total = 300_00     # what inspect() reports for any charge
+        self.inspect_error: str | None = None
+
+    def inspect(self, operation, params):
+        from actiongate.connectors.base import ConnectorError
+
+        if operation != "refund":
+            return None
+        if self.inspect_error:
+            raise ConnectorError(self.inspect_error)
+        refunded = sum(p["amount"] for op, p, _ in self.calls if op == "refund" and p["charge"] == params["charge"])
+        if params["amount"] > self.charge_total - refunded:
+            raise ConnectorError("refund exceeds the amount still refundable")
+        return {"summary": f"Refund {params['amount']} of {self.charge_total}"}
 
     def operations(self):
         return {

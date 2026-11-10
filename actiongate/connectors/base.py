@@ -31,6 +31,15 @@ class Connector(ABC):
     def execute(self, operation: str, params: dict[str, Any], idempotency_key: str) -> Any:
         """Run the operation with the stored credential. Must be JSON-serialisable."""
 
+    def inspect(self, operation: str, params: dict[str, Any]) -> dict[str, Any] | None:
+        """Optional pre-check for write operations, run before approval.
+
+        Return display context for approvers (at least a "summary" line), or
+        None. Raise ConnectorError to reject an action that cannot succeed.
+        Must only read from the upstream system, never change it.
+        """
+        return None
+
     def validate(self, operation: str, params: dict[str, Any]) -> None:
         """Reject unknown operations and parameters before policy runs."""
         ops = self.operations()

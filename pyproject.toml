@@ -1,7 +1,9 @@
 [project]
 name = "actiongate"
-version = "0.1.0"
-description = "Approval-enforcing execution proxy for AI agents"
+version = "0.2.0"
+description = "Approval-enforcing execution proxy for AI agents: credentials stay in the vault, risky actions need a human, every step is audited"
+readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
   "starlette>=0.40",
@@ -20,7 +22,7 @@ dev = ["pytest>=8"]
 actiongate = "actiongate.__main__:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

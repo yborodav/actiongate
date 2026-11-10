@@ -69,6 +69,34 @@ class StripeConnector(Connector):
             ),
         }
 
+    def inspect(self, operation: str, params: dict[str, Any]) -> dict[str, Any] | None:
+        if operation != "create_refund":
+            return None
+        amount = params["amount"]
+        if amount <= 0:
+            raise ConnectorError("amount must be positive")
+        ch = self._call("GET", f"/charges/{_safe_id(params['charge'])}")
+        currency = str(ch.get("currency", "")).lower()
+        total = int(ch.get("amount", 0))
+        refunded = int(ch.get("amount_refunded", 0))
+        remaining = total - refunded
+        if amount > remaining:
+            raise ConnectorError(
+                f"refund of {format_money(amount, currency)} exceeds the {format_money(remaining, currency)} "
+                f"still refundable on this charge"
+            )
+        summary = f"Refund {format_money(amount, currency)} of a {format_money(total, currency)} charge"
+        if refunded:
+            summary += f" ({format_money(refunded, currency)} already refunded)"
+        context = {"summary": summary, "currency": currency.upper(), "charge_amount": total,
+                   "already_refunded": refunded}
+        if ch.get("customer"):
+            context["customer"] = ch["customer"]
+        billing = ch.get("billing_details") or {}
+        if billing.get("email"):
+            context["customer_email"] = billing["email"]
+        return context
+
     def execute(self, operation: str, params: dict[str, Any], idempotency_key: str) -> Any:
         if operation == "list_charges":
             q = {"limit": params.get("limit", 10)}
@@ -102,6 +130,20 @@ class StripeConnector(Connector):
                 msg = ""
             raise ConnectorError(f"stripe returned {resp.status_code}: {msg}".strip())
         return resp.json()
+
+
+# Stripe amounts are in the smallest currency unit; these currencies have none.
+_ZERO_DECIMAL = {"bif", "clp", "djf", "gnf", "jpy", "kmf", "krw", "mga", "pyg", "rwf", "ugx", "vnd", "vuv",
+                 "xaf", "xof", "xpf"}
+
+
+def format_money(minor: int, currency: str) -> str:
+    """20000, 'usd' -> '$200.00 USD'; 500, 'jpy' -> '500 JPY'."""
+    cur = currency.lower()
+    if cur in _ZERO_DECIMAL:
+        return f"{minor:,} {cur.upper()}"
+    symbol = {"usd": "$", "cad": "$", "aud": "$", "nzd": "$", "eur": "€", "gbp": "£"}.get(cur, "")
+    return f"{symbol}{minor / 100:,.2f} {cur.upper()}".strip()
 
 
 def _safe_id(value: str) -> str:

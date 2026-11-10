@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS requests (
     decided_by TEXT,
     decided_at REAL,
     result_json TEXT,
-    error TEXT
+    error TEXT,
+    context_json TEXT
 );
 CREATE INDEX IF NOT EXISTS requests_status ON requests(status);
 
@@ -58,16 +59,24 @@ class Store:
         if path != ":memory:":
             self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         # One writer at a time; SQLite serialises anyway, this keeps
         # read-modify-write sequences atomic within the process.
         self.lock = threading.RLock()
+
+    def _migrate(self) -> None:
+        cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(requests)")}
+        if "context_json" not in cols:  # databases created before v0.2
+            self._conn.execute("ALTER TABLE requests ADD COLUMN context_json TEXT")
 
     # ---------- requests ----------
 
     def insert_request(self, r: Request) -> None:
         with self.lock:
             self._conn.execute(
-                "INSERT INTO requests VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                """INSERT INTO requests (id, action_json, action_hash, status, rule_name, approvers_json,
+                   reason, created_at, expires_at, decided_by, decided_at, result_json, error, context_json)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     r.id,
                     json.dumps(r.action.to_dict()),
@@ -82,6 +91,7 @@ class Store:
                     r.decided_at,
                     json.dumps(r.result) if r.result is not None else None,
                     r.error,
+                    json.dumps(r.context) if r.context is not None else None,
                 ),
             )
 
@@ -179,4 +189,5 @@ def _row_to_request(row: sqlite3.Row) -> Request:
         decided_at=row["decided_at"],
         result=json.loads(row["result_json"]) if row["result_json"] else None,
         error=row["error"],
+        context=json.loads(row["context_json"]) if row["context_json"] else None,
     )
