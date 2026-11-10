@@ -57,7 +57,10 @@ python -m actiongate new-key                          # prints key + hash for co
 cp actiongate.example.yaml actiongate.yaml
 python -m actiongate serve --config actiongate.yaml   # REST on :8080, MCP at /mcp/
 python -m actiongate verify-audit --config actiongate.yaml
+python scripts/live_smoke.py                          # live end-to-end check against Stripe TEST mode
 ```
+
+`scripts/live_smoke.py` runs the real gateway in-process with the local config, vault and database. It needs a separate vault entry `stripe_smoke_key`: a Stripe test key with PaymentIntents Write and Charges Read. It refuses to run on live keys.
 
 Python 3.11+ is required. `starlette` is used directly; there is no FastAPI dependency.
 
